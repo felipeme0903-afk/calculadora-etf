@@ -172,7 +172,12 @@ def align(prices: pd.DataFrame) -> tuple[pd.DataFrame, int]:
 
 
 def resample(prices: pd.DataFrame | pd.Series, freq: str):
-    return prices.resample(U.WEEKLY_RULE).last().dropna(how="all") if freq == "W" else prices
+    """Semanal: último preço de cada semana, indexado pela data real desse pregão."""
+    if freq != "W":
+        return prices
+    weekly = prices.resample(U.WEEKLY_RULE).last()
+    weekly.index = pd.DatetimeIndex(prices.index.to_series().resample(U.WEEKLY_RULE).last())
+    return weekly.dropna(how="all")
 
 
 # --- Orquestração -------------------------------------------------------------

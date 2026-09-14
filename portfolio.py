@@ -53,11 +53,11 @@ def portfolio_returns(returns: pd.DataFrame, w) -> pd.Series:
     return pd.Series(returns.to_numpy() @ np.asarray(w), index=returns.index, name="Carteira")
 
 
-def portfolio_index(returns: pd.DataFrame, w, base: float = 100.0) -> pd.Series:
+def portfolio_index(returns: pd.DataFrame, w, start, base: float = 100.0) -> pd.Series:
+    """Índice base 100 da carteira; `start` é a data do primeiro preço (anterior ao 1º retorno)."""
     r = portfolio_returns(returns, w)
-    idx = base * np.exp(r.cumsum())
-    first = pd.Series([base], index=[returns.index[0] - pd.Timedelta(days=1)])
-    return pd.concat([first, idx]).rename("Carteira")
+    first = pd.Series([base], index=pd.DatetimeIndex([start]))
+    return pd.concat([first, base * np.exp(r.cumsum())]).rename("Carteira")
 
 
 def risk_contribution(w, cov) -> np.ndarray:
