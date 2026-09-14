@@ -63,7 +63,8 @@ VAR_LEVELS = [0.95, 0.99]
 DEFAULT_VAR_LEVEL = 0.95
 ROLLING_WINDOW_RANGE = (21, 252)
 DEFAULT_ROLLING_WINDOW = 63
-HIGH_CORR_THRESHOLD = 0.85
+DEFAULT_MAX_CORR = 0.85  # pares acima disso: w_i + w_j ≤ peso máximo por ativo
+MAX_CORR_RANGE = (0.50, 1.00)  # 1,00 = sem restrição
 
 # --- Otimização ---------------------------------------------------------------
 OBJECTIVES = ["Max Sharpe", "Min Vol", "Max Sortino", "Risk Parity", "Igual"]

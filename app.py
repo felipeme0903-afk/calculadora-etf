@@ -27,7 +27,7 @@ st.set_page_config(page_title="Calculadora de Carteira de ETFs", page_icon="📈
 
 SS = st.session_state
 SCENARIO_KEYS = ["n_assets", "wbounds", "capital", "period", "freq", "base", "bench", "rf",
-                 "var_level", "roll_win", "objective", "n_frontier", "shrink_lambda"]
+                 "var_level", "roll_win", "objective", "n_frontier", "shrink_lambda", "max_corr"]
 
 
 # ============================================================================
@@ -62,6 +62,7 @@ def init_state():
     SS.objective = U.DEFAULT_OBJECTIVE
     SS.n_frontier = U.DEFAULT_FRONTIER_POINTS
     SS.shrink_lambda = U.DEFAULT_SHRINKAGE
+    SS.max_corr = U.DEFAULT_MAX_CORR
     SS.nonce = 0
     SS.force_pending = False
     SS.flash = []
@@ -175,23 +176,25 @@ def cached_universe(tickers: tuple, bench: str, period: str, base: str, freq: st
 
 @st.cache_data(show_spinner="Otimizando…")
 def cached_optimization(returns: pd.DataFrame, objective: str, periods: int, rf: float,
-                        bounds: tuple, lam: float, k: int):
+                        bounds: tuple, lam: float, k: int, max_corr: float):
     tickers = list(returns.columns)
     mu = P.mu_vector(returns, periods)
     cov = P.cov_matrix(returns, periods)
     mu_s = P.shrink_mu(mu, lam)
+    pairs = O.correlated_pairs(P.corr_matrix(returns), max_corr)
+    lin = O.pair_constraints(len(tickers), pairs, bounds[0][1])  # par ≤ peso máximo por ativo
 
     def pack(res: O.OptResult, label: str):
         return {"weights": dict(zip(tickers, res.weights)), "success": res.success,
                 "message": res.message, "label": label}
 
-    hist = O.optimize(objective, mu, cov, returns, periods, rf, list(bounds))
+    hist = O.optimize(objective, mu, cov, returns, periods, rf, list(bounds), lin)
     if objective == "Max Sortino":  # Sortino usa a série; desloca a média para refletir o shrinkage
         shrunk_returns = returns + (mu_s - mu) / periods
-        shr = O.optimize(objective, mu_s, cov, shrunk_returns, periods, rf, list(bounds))
+        shr = O.optimize(objective, mu_s, cov, shrunk_returns, periods, rf, list(bounds), lin)
     else:
-        shr = O.optimize(objective, mu_s, cov, returns, periods, rf, list(bounds))
-    frontier = O.efficient_frontier(mu, cov, list(bounds), k)
+        shr = O.optimize(objective, mu_s, cov, returns, periods, rf, list(bounds), lin)
+    frontier = O.efficient_frontier(mu, cov, list(bounds), k, lin)
     frontier = frontier.rename(columns={f"w{i}": t for i, t in enumerate(tickers)})
     return pack(hist, f"{objective} (μ histórico)"), pack(shr, f"{objective} (shrinkage λ={lam:.2f})"), frontier
 
@@ -327,6 +330,9 @@ sb.header("Otimização")
 sb.radio("Objetivo", U.OBJECTIVES, key="objective")
 sb.slider("λ do shrinkage", 0.0, 1.0, step=0.05, key="shrink_lambda",
           help="μ_aj = λ·μ_hist + (1−λ)·média(μ_hist). λ=1: histórico puro; λ=0: todos iguais")
+sb.slider("Correlação máxima entre pares", *U.MAX_CORR_RANGE, step=0.01, key="max_corr",
+          help="Para cada par de ativos com correlação acima deste valor, o otimizador limita "
+               "w_i + w_j ≤ peso máximo por ativo (o par conta como um ativo só). 1,00 = sem restrição.")
 sb.slider("Nº de pontos da fronteira", *U.FRONTIER_POINTS_RANGE, key="n_frontier")
 sb.button("▶ Executar otimização", type="primary", on_click=cb_apply_weights, args=("_opt_hist",),
           width="stretch", help="Roda o SLSQP e preenche os pesos na tela")
@@ -396,8 +402,11 @@ corr = P.corr_matrix(rets)
 
 lo, hi = SS.wbounds[0] / 100, SS.wbounds[1] / 100
 bounds = tuple(O.make_bounds(len(cols), lo, hi))
+max_corr = float(SS.max_corr)
+corr_pairs = O.correlated_pairs(corr, max_corr)
+corr_lin = O.pair_constraints(len(cols), corr_pairs, hi)
 opt_hist, opt_shr, frontier = cached_optimization(rets, SS.objective, periods, rf, bounds,
-                                                  float(SS.shrink_lambda), int(SS.n_frontier))
+                                                  float(SS.shrink_lambda), int(SS.n_frontier), max_corr)
 SS._opt_hist, SS._opt_shr = opt_hist, opt_shr
 w_opt = pd.Series(opt_hist["weights"]).reindex(cols)
 w_shr = pd.Series(opt_shr["weights"]).reindex(cols)
@@ -471,12 +480,24 @@ with tabs[1]:
 # ---------------------------------------------------------------- Correlação
 with tabs[2]:
     st.plotly_chart(plot_corr(corr), width="stretch")
-    pairs = P.high_corr_pairs(corr, U.HIGH_CORR_THRESHOLD)
+    pairs = P.high_corr_pairs(corr, max_corr)
     if pairs.empty:
-        st.success(f"Nenhum par com correlação > {U.HIGH_CORR_THRESHOLD:.2f}")
+        st.success(f"Nenhum par com correlação > {max_corr:.2f}: a restrição de correlação não afeta o otimizador.")
     else:
-        st.warning(f"Pares com correlação > {U.HIGH_CORR_THRESHOLD:.2f} (possível overlap):")
-        st.dataframe(pairs, hide_index=True, column_config={"Correlação": st.column_config.NumberColumn(format="%.3f")})
+        pairs["Soma dos pesos (atual)"] = [w_cur[a] + w_cur[b] for a, b in zip(pairs["Ativo 1"], pairs["Ativo 2"])]
+        if opt_hist["success"]:
+            pairs["Soma dos pesos (otimizada)"] = [w_opt[a] + w_opt[b] for a, b in zip(pairs["Ativo 1"], pairs["Ativo 2"])]
+        pairs["Limite"] = hi
+        st.warning(f"Pares com correlação > {max_corr:.2f} (possível overlap). No otimizador, cada par soma no "
+                   f"máximo {hi:.0%} (peso máximo por ativo).")
+        st.dataframe(pairs, hide_index=True, column_config={
+            "Correlação": st.column_config.NumberColumn(format="%.3f"),
+            **{c: st.column_config.NumberColumn(format="percent")
+               for c in ("Soma dos pesos (atual)", "Soma dos pesos (otimizada)", "Limite")}})
+        acima = pairs[pairs["Soma dos pesos (atual)"] > hi + 1e-9]
+        if not acima.empty:
+            st.error("A carteira atual excede o limite em: " +
+                     ", ".join(f"{a} + {b}" for a, b in zip(acima["Ativo 1"], acima["Ativo 2"])))
 
 # ---------------------------------------------------------------- Otimização
 with tabs[3]:
@@ -501,9 +522,11 @@ with tabs[3]:
         points["Ótima (shrinkage)"] = (P.portfolio_vol(w_shr, cov), P.portfolio_return(w_shr, mu))
     assets_pts = pd.DataFrame({"Vol": np.sqrt(np.diag(cov)), "Retorno": mu.values}, index=cols)
     if frontier.empty:
-        st.error(O.check_feasible(list(bounds)) or "Fronteira eficiente não pôde ser calculada.")
+        st.error(O.check_feasible(list(bounds), corr_lin) or "Fronteira eficiente não pôde ser calculada.")
     st.plotly_chart(plot_frontier(frontier, assets_pts, points), width="stretch")
-    st.caption("Retorno e σ pelo μ histórico; a carteira com shrinkage é plotada com o μ histórico para comparação.")
+    st.caption("Retorno e σ pelo μ histórico; a carteira com shrinkage é plotada com o μ histórico para comparação."
+               + (f" A fronteira respeita a restrição de correlação ({len(corr_pairs)} par(es) > {max_corr:.2f}); "
+                  "a carteira atual pode ficar acima dela se não respeitar a restrição." if corr_pairs else ""))
 
     rc = pd.DataFrame({"Atual": P.risk_contribution(w_cur, cov)}, index=cols)
     if opt_hist["success"]:

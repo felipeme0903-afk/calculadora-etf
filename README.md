@@ -35,6 +35,7 @@ Teste de aceitação da etapa 1 (com rede): `.venv\Scripts\python data.py`
 - **Série da carteira:** `r_p = Σ w_i r_i`. Assim, `média(r_p)×252 = W'μ` e `desvio(r_p)×√252 = √(W'ΣW)`, as mesmas fórmulas usadas no otimizador.
 - **Sortino:** `DesvioNeg = √(média(min(r,0)²)) × √252`.
 - **Conversão cambial:** ativo em USD com base BRL é multiplicado por `BRL=X`. Ativo em BRL com base USD é dividido por `BRL=X`.
+- **Correlação máxima (otimizador):** para cada par de ativos com correlação acima do limite da tela, `w_i + w_j ≤ peso máximo por ativo`. Com 1,00 não há restrição. Ativos da B3 e dos EUA fecham em horários diferentes, então a correlação diária entre eles sai subestimada (ex.: QQQ × NASD11 ≈ 0,68 diária e 0,92 semanal). Para capturar esse overlap, use frequência semanal.
 - **Alinhamento:** `ffill(limit=2)`, depois `dropna` (junção inner).
 - **CSVs exportados:** padrão do Excel em português (separador `;`, decimal `,`).
 

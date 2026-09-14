@@ -78,3 +78,23 @@ def test_export_generates_files(fake_download, monkeypatch, tmp_path):
     for fn in U.OUTPUT_FILES.values():
         assert fn in names
     assert {"composicao.png", "fronteira.png", "correlacao.png"} <= names
+
+
+def test_correlation_limit_applied_in_app(fake_download):
+    import metrics as M
+    import optimizer as O
+    import portfolio as P
+    at = run_app()
+    at.sidebar.slider(key="max_corr").set_value(0.60).run()
+    assert not at.exception, at.exception
+    opt = at.session_state["_opt_hist"]
+    assert opt["success"], opt["message"]
+    tickers = list(opt["weights"])
+    # recalcula os pares a partir dos mesmos dados sintéticos usados pelo app
+    uni = D.load_universe(tickers, at.session_state["bench"], "5y", "BRL")
+    corr = P.corr_matrix(M.log_returns(uni.prices[tickers]))
+    pairs = O.correlated_pairs(corr, 0.60)
+    assert pairs
+    w = [opt["weights"][t] for t in tickers]
+    cap = at.session_state["wbounds"][1] / 100
+    assert all(w[i] + w[j] <= cap + 1e-6 for i, j in pairs)
