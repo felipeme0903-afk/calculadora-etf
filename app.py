@@ -209,7 +209,9 @@ def plot_pie(weights: pd.Series, title: str):
 
 
 def plot_lines(df: pd.DataFrame, title: str, pct: bool = False, highlight=("Carteira", "Carteira otimizada", )):
-    fig = px.line(df, title=title)
+    # SVG em vez de WebGL: com >1000 pontos o Plotly usa WebGL, que falha quando o navegador
+    # não tem aceleração gráfica ou esgota os contextos WebGL (cada gráfico em cada aba abre um)
+    fig = px.line(df, title=title, render_mode="svg")
     for tr in fig.data:
         tr.line.width = 3 if tr.name in highlight else 1.3
     fig.update_layout(height=450, legend_title_text="", hovermode="x unified", yaxis_title=None, xaxis_title=None)
