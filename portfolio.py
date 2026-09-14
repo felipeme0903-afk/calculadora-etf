@@ -24,6 +24,16 @@ def corr_matrix(returns: pd.DataFrame) -> pd.DataFrame:
     return returns.corr(method="pearson")
 
 
+def weekly_returns(returns: pd.DataFrame, rule: str = "W-FRI") -> pd.DataFrame:
+    """Log-retornos semanais = soma dos log-retornos diários da semana."""
+    return returns.resample(rule).sum(min_count=1).dropna(how="any")
+
+
+def constraint_corr(returns: pd.DataFrame, freq: str, weekly: bool, rule: str = "W-FRI") -> pd.DataFrame:
+    """Correlação usada na restrição do otimizador: semanal se pedido e os retornos forem diários."""
+    return corr_matrix(weekly_returns(returns, rule) if weekly and freq == "D" else returns)
+
+
 def high_corr_pairs(corr: pd.DataFrame, threshold: float) -> pd.DataFrame:
     cols = list(corr.columns)
     pairs = [(cols[i], cols[j], corr.iloc[i, j])

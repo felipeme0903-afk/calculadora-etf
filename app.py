@@ -46,7 +46,8 @@ st.set_page_config(page_title="Calculadora de Carteira de ETFs", page_icon="📈
 
 SS = st.session_state
 SCENARIO_KEYS = ["n_assets", "wbounds", "capital", "period", "freq", "base", "bench", "rf",
-                 "var_level", "roll_win", "objective", "n_frontier", "shrink_lambda", "max_corr"]
+                 "var_level", "roll_win", "objective", "n_frontier", "shrink_lambda", "max_corr",
+                 "pair_cap", "corr_weekly"]
 
 
 # ============================================================================
@@ -82,6 +83,8 @@ def init_state():
     SS.n_frontier = U.DEFAULT_FRONTIER_POINTS
     SS.shrink_lambda = U.DEFAULT_SHRINKAGE
     SS.max_corr = U.DEFAULT_MAX_CORR
+    SS.pair_cap = U.DEFAULT_PAIR_CAP
+    SS.corr_weekly = U.DEFAULT_CORR_WEEKLY
     SS.nonce = 0
     SS.force_pending = False
     SS.flash = []
@@ -195,13 +198,14 @@ def cached_universe(tickers: tuple, bench: str, period: str, base: str, freq: st
 
 @st.cache_data(show_spinner="Otimizando…")
 def cached_optimization(returns: pd.DataFrame, objective: str, periods: int, rf: float,
-                        bounds: tuple, lam: float, k: int, max_corr: float):
+                        bounds: tuple, lam: float, k: int, max_corr: float, pair_cap: float,
+                        corr_weekly: bool, freq: str):
     tickers = list(returns.columns)
     mu = P.mu_vector(returns, periods)
     cov = P.cov_matrix(returns, periods)
     mu_s = P.shrink_mu(mu, lam)
-    pairs = O.correlated_pairs(P.corr_matrix(returns), max_corr)
-    lin = O.pair_constraints(len(tickers), pairs, bounds[0][1])  # par ≤ peso máximo por ativo
+    pairs = O.correlated_pairs(P.constraint_corr(returns, freq, corr_weekly, U.WEEKLY_RULE), max_corr)
+    lin = O.pair_constraints(len(tickers), pairs, pair_cap)
 
     def pack(res: O.OptResult, label: str):
         return {"weights": dict(zip(tickers, res.weights)), "success": res.success,
@@ -213,9 +217,12 @@ def cached_optimization(returns: pd.DataFrame, objective: str, periods: int, rf:
         shr = O.optimize(objective, mu_s, cov, shrunk_returns, periods, rf, list(bounds), lin)
     else:
         shr = O.optimize(objective, mu_s, cov, returns, periods, rf, list(bounds), lin)
+    # mesma otimização sem a restrição de correlação, para mostrar o efeito dela
+    free = O.optimize(objective, mu, cov, returns, periods, rf, list(bounds)) if lin is not None else hist
     frontier = O.efficient_frontier(mu, cov, list(bounds), k, lin)
     frontier = frontier.rename(columns={f"w{i}": t for i, t in enumerate(tickers)})
-    return pack(hist, f"{objective} (μ histórico)"), pack(shr, f"{objective} (shrinkage λ={lam:.2f})"), frontier
+    return (pack(hist, f"{objective} (μ histórico)"), pack(shr, f"{objective} (shrinkage λ={lam:.2f})"),
+            pack(free, f"{objective} sem restrição de correlação"), frontier)
 
 
 # ============================================================================
@@ -350,8 +357,15 @@ sb.radio("Objetivo", U.OBJECTIVES, key="objective")
 sb.slider("λ do shrinkage", 0.0, 1.0, step=0.05, key="shrink_lambda",
           help="μ_aj = λ·μ_hist + (1−λ)·média(μ_hist). λ=1: histórico puro; λ=0: todos iguais")
 sb.slider("Correlação máxima entre pares", *U.MAX_CORR_RANGE, step=0.01, key="max_corr",
-          help="Para cada par de ativos com correlação acima deste valor, o otimizador limita "
-               "w_i + w_j ≤ peso máximo por ativo (o par conta como um ativo só). 1,00 = sem restrição.")
+          help="Para cada par de ativos com correlação acima deste valor, o otimizador limita a soma "
+               "dos dois pesos ao peso máximo somado por par. 1,00 = sem restrição.")
+sb.slider("Peso máximo somado por par (%)", 0.0, 100.0, step=1.0, key="pair_cap",
+          help="Teto de w_i + w_j para cada par acima da correlação máxima. Se for ≥ 2 × peso máximo "
+               "por ativo, a restrição não tem efeito.")
+sb.checkbox("Medir correlação da restrição em base semanal", key="corr_weekly",
+            disabled=SS.freq == "Semanal",
+            help="Recomendado com ativos da B3 e dos EUA: como fecham em horários diferentes, a correlação "
+                 "diária entre eles sai subestimada (ex.: QQQ × NASD11 ≈ 0,68 diária e 0,92 semanal).")
 sb.slider("Nº de pontos da fronteira", *U.FRONTIER_POINTS_RANGE, key="n_frontier")
 sb.button("▶ Executar otimização", type="primary", on_click=cb_apply_weights, args=("_opt_hist",),
           width="stretch", help="Roda o SLSQP e preenche os pesos na tela")
@@ -422,11 +436,15 @@ corr = P.corr_matrix(rets)
 lo, hi = SS.wbounds[0] / 100, SS.wbounds[1] / 100
 bounds = tuple(O.make_bounds(len(cols), lo, hi))
 max_corr = float(SS.max_corr)
-corr_pairs = O.correlated_pairs(corr, max_corr)
-corr_lin = O.pair_constraints(len(cols), corr_pairs, hi)
-opt_hist, opt_shr, frontier = cached_optimization(rets, SS.objective, periods, rf, bounds,
-                                                  float(SS.shrink_lambda), int(SS.n_frontier), max_corr)
-SS._opt_hist, SS._opt_shr = opt_hist, opt_shr
+pair_cap = float(SS.pair_cap) / 100
+corr_weekly = bool(SS.corr_weekly) and freq == "D"
+corr_c = P.constraint_corr(rets, freq, corr_weekly, U.WEEKLY_RULE)
+corr_pairs = O.correlated_pairs(corr_c, max_corr)
+corr_lin = O.pair_constraints(len(cols), corr_pairs, pair_cap)
+opt_hist, opt_shr, opt_free, frontier = cached_optimization(
+    rets, SS.objective, periods, rf, bounds, float(SS.shrink_lambda), int(SS.n_frontier),
+    max_corr, pair_cap, corr_weekly, freq)
+SS._opt_hist, SS._opt_shr, SS._opt_free = opt_hist, opt_shr, opt_free
 w_opt = pd.Series(opt_hist["weights"]).reindex(cols)
 w_shr = pd.Series(opt_shr["weights"]).reindex(cols)
 
@@ -499,24 +517,43 @@ with tabs[1]:
 # ---------------------------------------------------------------- Correlação
 with tabs[2]:
     st.plotly_chart(plot_corr(corr), width="stretch")
-    pairs = P.high_corr_pairs(corr, max_corr)
+    st.subheader("Restrição de correlação no otimizador")
+    basis = "semanal" if corr_weekly or freq == "W" else "diária"
+    pairs = P.high_corr_pairs(corr_c, max_corr)
     if pairs.empty:
-        st.success(f"Nenhum par com correlação > {max_corr:.2f}: a restrição de correlação não afeta o otimizador.")
+        st.success(f"Nenhum par com correlação {basis} > {max_corr:.2f}: a restrição não afeta o otimizador.")
     else:
-        pairs["Soma dos pesos (atual)"] = [w_cur[a] + w_cur[b] for a, b in zip(pairs["Ativo 1"], pairs["Ativo 2"])]
-        if opt_hist["success"]:
-            pairs["Soma dos pesos (otimizada)"] = [w_opt[a] + w_opt[b] for a, b in zip(pairs["Ativo 1"], pairs["Ativo 2"])]
-        pairs["Limite"] = hi
-        st.warning(f"Pares com correlação > {max_corr:.2f} (possível overlap). No otimizador, cada par soma no "
-                   f"máximo {hi:.0%} (peso máximo por ativo).")
+        a_, b_ = list(pairs["Ativo 1"]), list(pairs["Ativo 2"])
+        pairs = pairs.rename(columns={"Correlação": f"Correlação ({basis})"})
+        if corr_weekly:
+            pairs["Correlação (diária)"] = [corr.loc[a, b] for a, b in zip(a_, b_)]
+        w_free = pd.Series(opt_free["weights"]).reindex(cols)
+        pairs["Sem restrição"] = [w_free[a] + w_free[b] for a, b in zip(a_, b_)]
+        pairs["Otimizada"] = [w_opt[a] + w_opt[b] for a, b in zip(a_, b_)]
+        pairs["Atual"] = [w_cur[a] + w_cur[b] for a, b in zip(a_, b_)]
+        pairs["Limite"] = pair_cap
+        pairs["Status (otimizada)"] = ["—" if not opt_hist["success"] else
+                                       "🔒 no limite" if s >= pair_cap - 1e-4 else "✔ abaixo"
+                                       for s in pairs["Otimizada"]]
+        st.warning(f"{len(pairs)} par(es) com correlação {basis} > {max_corr:.2f}. No otimizador, cada par soma no "
+                   f"máximo {pair_cap:.0%}. Colunas de peso = soma dos dois ativos do par.")
+        if pair_cap >= 2 * hi - 1e-9:
+            st.error(f"O teto por par ({pair_cap:.0%}) é ≥ 2 × peso máximo por ativo ({hi:.0%}): a restrição "
+                     "não tem efeito. Reduza o peso máximo somado por par.")
         st.dataframe(pairs, hide_index=True, column_config={
-            "Correlação": st.column_config.NumberColumn(format="%.3f"),
+            **{c: st.column_config.NumberColumn(format="%.3f") for c in pairs.columns if c.startswith("Correlação")},
             **{c: st.column_config.NumberColumn(format="percent")
-               for c in ("Soma dos pesos (atual)", "Soma dos pesos (otimizada)", "Limite")}})
-        acima = pairs[pairs["Soma dos pesos (atual)"] > hi + 1e-9]
+               for c in ("Sem restrição", "Otimizada", "Atual", "Limite")}})
+        cut = pairs[pairs["Sem restrição"] > pair_cap + 1e-4]
+        if opt_hist["success"] and opt_free["success"] and not cut.empty:
+            st.info("A restrição está atuando. Sem ela, o otimizador colocaria: " + "; ".join(
+                f"{a} + {b} = {s:.0%}" for a, b, s in zip(cut["Ativo 1"], cut["Ativo 2"], cut["Sem restrição"])))
+        acima = pairs[pairs["Atual"] > pair_cap + 1e-4]
         if not acima.empty:
-            st.error("A carteira atual excede o limite em: " +
+            st.warning("A carteira atual excede o limite em: " +
                      ", ".join(f"{a} + {b}" for a, b in zip(acima["Ativo 1"], acima["Ativo 2"])))
+        st.caption("A restrição é por par: três ou mais ativos correlacionados entre si podem somar mais que o "
+                   "limite no total.")
 
 # ---------------------------------------------------------------- Otimização
 with tabs[3]:
@@ -528,6 +565,8 @@ with tabs[3]:
 
     weights_tbl = pd.DataFrame({"Atual": w_cur, "Otimizada (μ histórico)": w_opt,
                                 f"Otimizada (shrinkage λ={SS.shrink_lambda:.2f})": w_shr})
+    if corr_pairs:
+        weights_tbl["Otimizada sem restrição de correlação"] = pd.Series(opt_free["weights"]).reindex(cols)
     b1, b2 = st.columns(2)
     b1.button("Aplicar pesos otimizados (μ histórico)", on_click=cb_apply_weights, args=("_opt_hist",),
               width="stretch", type="primary")

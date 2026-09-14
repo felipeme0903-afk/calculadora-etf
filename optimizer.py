@@ -1,7 +1,7 @@
 """Otimização de pesos com scipy SLSQP: long-only, soma = 1, bounds por ativo.
 
 Restrição opcional de correlação: para cada par de ativos com correlação acima do máximo,
-w_i + w_j ≤ teto (o peso máximo por ativo), ou seja, o par é tratado como um único ativo.
+w_i + w_j ≤ teto definido na tela, ou seja, o par é tratado como um único ativo.
 Restrições lineares extras são passadas como `lin = (A_ub, b_ub)`, significando A_ub @ w ≤ b_ub.
 """
 
@@ -74,7 +74,7 @@ def check_feasible(bounds, lin: Linear = None) -> str | None:
         if not res.success:
             return (f"Restrição de correlação inviável: com {len(lin[1])} par(es) acima do limite, cada par "
                     f"somando no máximo {lin[1][0]:.0%}, não é possível chegar a 100%. "
-                    "Aumente a correlação máxima, o peso máximo, ou troque ativos muito correlacionados.")
+                    "Aumente a correlação máxima ou o peso máximo por par, ou troque ativos muito correlacionados.")
     return None
 
 

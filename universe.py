@@ -63,8 +63,11 @@ VAR_LEVELS = [0.95, 0.99]
 DEFAULT_VAR_LEVEL = 0.95
 ROLLING_WINDOW_RANGE = (21, 252)
 DEFAULT_ROLLING_WINDOW = 63
-DEFAULT_MAX_CORR = 0.85  # pares acima disso: w_i + w_j ≤ peso máximo por ativo
+DEFAULT_MAX_CORR = 0.85  # pares acima disso: w_i + w_j ≤ DEFAULT_PAIR_CAP
 MAX_CORR_RANGE = (0.50, 1.00)  # 1,00 = sem restrição
+DEFAULT_PAIR_CAP = 30.0  # % máximo somado por par correlacionado
+# B3 e EUA fecham em horários diferentes: a correlação diária entre eles sai subestimada
+DEFAULT_CORR_WEEKLY = True
 
 # --- Otimização ---------------------------------------------------------------
 OBJECTIVES = ["Max Sharpe", "Min Vol", "Max Sortino", "Risk Parity", "Igual"]

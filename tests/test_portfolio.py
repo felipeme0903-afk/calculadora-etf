@@ -44,3 +44,13 @@ def test_shrinkage():
     mu = pd.Series([0.1, 0.3])
     assert np.allclose(P.shrink_mu(mu, 0.5), [0.15, 0.25])
     assert np.allclose(P.shrink_mu(mu, 1.0), mu)
+
+
+def test_weekly_constraint_corr(prices):
+    df, _ = prices
+    r = M.log_returns(df)
+    wk = P.weekly_returns(r)
+    assert np.allclose(wk.sum(), r.sum())  # log-retornos somam
+    assert np.allclose(P.constraint_corr(r, "D", False), P.corr_matrix(r))
+    assert np.allclose(P.constraint_corr(r, "D", True), P.corr_matrix(wk))
+    assert np.allclose(P.constraint_corr(r, "W", True), P.corr_matrix(r))
