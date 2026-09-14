@@ -5,9 +5,11 @@ Executar:  streamlit run app.py
 
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -21,6 +23,23 @@ import optimizer as O
 import portfolio as P
 import report as R
 import universe as U
+
+
+def _reload_stale_modules():
+    """Recarrega módulos do projeto cujo arquivo mudou desde que foram carregados.
+
+    Ao atualizar o código (git pull no Streamlit Cloud ou edição local), o Streamlit reexecuta
+    o app.py mas pode manter na memória a versão antiga dos módulos importados, o que causa
+    erros como "module 'universe' has no attribute ...". Ordem: dependências primeiro.
+    """
+    for mod in (U, M, P, O, D, R):
+        mtime = Path(mod.__file__).stat().st_mtime
+        if getattr(mod, "_src_mtime", None) != mtime:
+            importlib.reload(mod)
+            mod._src_mtime = mtime
+
+
+_reload_stale_modules()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 st.set_page_config(page_title="Calculadora de Carteira de ETFs", page_icon="📈", layout="wide")

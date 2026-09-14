@@ -14,6 +14,11 @@ APP = Path(__file__).resolve().parents[1] / "app.py"
 @pytest.fixture
 def fake_download(monkeypatch, prices):
     df, bench = prices
+    # marca os módulos como atualizados para o app não recarregá-los (o que desfaria os patches)
+    import importlib
+    for name in ("universe", "metrics", "portfolio", "optimizer", "data", "report"):
+        mod = importlib.import_module(name)
+        mod._src_mtime = Path(mod.__file__).stat().st_mtime
 
     def fake(symbols, period, force=False):
         rng = np.random.default_rng(len(symbols))
